@@ -1,6 +1,7 @@
 # Libraries
 library(Rniftilib)
 library(plyr)
+library(XML)
 
 # Helper Functions
 vcat_fun <- function(verbose) {
@@ -95,6 +96,23 @@ detect.peaks <- function(statfile, maskfile, peakfile,
 
 
 # Read in ROIs
+read.curv <- function(mask=NULL) {
+  # Read in data
+  nim  <- nifti.image.read("CurvVol_2mm.nii.gz")
+  img  <- as.vector(nim[,,])
+  
+  # Make data binary
+  img  <- (img>0)*2 + (img<0)*1 # 1 = gyrus, 2 = sulcus
+  
+  # Create labels
+  df   <- data.frame(index=1:2, name=c("gyrus", "sulcus"))
+  
+  # Mask
+  if (!is.null(mask)) img <- img[mask]
+  
+  # Return
+  list(labels=df, data=img)
+}
 read.brodmann <- function(mask=NULL) {
   # Read in data
   nim  <- nifti.image.read("brodmann_2mm.nii.gz")
@@ -182,15 +200,18 @@ parse.closest.rois <- function(rois, nim, mask, search.range=5, progress="text",
         lim  <- ilim & jlim & zlim
         crds.vals.lim <- crds.vals[lim,]
         # Check if anything is within search range
-        if (sum(lim)==0) ind <- peak.ind
-        # Get closest value
-        tmp <- sweep(crds.vals.lim, 2, as.numeric(loc))
-        d2 <- rowSums(tmp^2) # euclidean squared distance
-        closest.ind <- as.numeric(names(which.min(d2))) # the names have the original index
-        closest.d <- sqrt(min(d2))
-        # Return closest index if within range
-        if (closest.d <= rr) ind <- closest.ind
-        else ind <- peak.ind
+        if (sum(lim)==0) {
+          ind <- peak.ind
+        } else {
+          # Get closest value
+          tmp <- sweep(crds.vals.lim, 2, as.numeric(loc))
+          d2 <- rowSums(tmp^2) # euclidean squared distance
+          closest.ind <- as.numeric(names(which.min(d2))) # the names have the original index
+          closest.d <- sqrt(min(d2))
+          # Return closest index if within range
+          if (closest.d <= rr) ind <- closest.ind
+          else ind <- peak.ind
+        }
       } else {
         ind <- peak.ind
         closest.d <- 0
@@ -225,7 +246,7 @@ detect.peaks.and.whereami <- function(statfile, maskfile, sep.dist.voxs=6, ...)
   peakfile  <- tempfile(pattern="peaks", fileext=".nii.gz")
   detect.peaks(statfile, maskfile, peakfile, 
                smooth.signif=T, sep.dist.voxs=sep.dist.voxs)
-  df.tab <- whereami(statfile, maskfile, ...)
+  df.tab <- whereami(statfile, maskfile, peakfile, ...)
   file.remove(peakfile)
   df.tab
 }
@@ -262,7 +283,7 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   hemis    <- factor(sign(crds$x[peaks==1]), levels=c(-1,0,1), labels=c("L", "B", "R"))
   
   # Read in ROIs and parse region associated with each peak
-  roi.sets <- c("freesurfer", "brodmann", "yeo", "cerebellum")
+  roi.sets <- c("curv", "freesurfer", "brodmann", "yeo", "cerebellum")
   setwd(whereami.dir)
   df.tab2  <- laply(roi.sets, function(roi.set) {
     vcat("determining %s regions", roi.set)
@@ -280,12 +301,25 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   ## lowercase crus and vermis
   df.tab2$cerebellum <- sub("Crus", "crus", df.tab2$cerebellum)
   df.tab2$cerebellum <- sub("Vermis", "vermis", df.tab2$cerebellum)
+  ## only keep brodmann area if freesurfer not cerebellum, brain-stem, or subcortical
+  ## only keep gyrus/sulcus if freesurfer not cerebellum, brain-stem, or subcortical
+  inds <- df.tab2$freesurfer %in% c("Brain Stem", "Cerebellum", "Thalamus", "Caudate", "Putamen", "Pallidum", "Hippocampus", "Amygdala", "Accumbens", "VentralDC")
+  df.tab2$brodmann[inds] <- ""
+  df.tab2$curv[inds] <- ""
+  ## remove sulcus/gyrus from insula and precuneus...TODO
+  
+  ## remove yeo network in certain subcortical regions
+  inds <- df.tab2$freesurfer %in% c("Brain Stem", "Thalamus", "Hippocampus", "Amygdala", "VentralDC")
+  df.tab2$yeo[inds] <- ""
   
   # Combine it all together
   vcat("combining it all together")
+  region <- gsub(" $", "", paste(capitalize(tolower(df.tab2$freesurfer)), df.tab2$curv, sep=" "))
+  region <- gsub("Ventraldc", "VentralDC", region)
+  region <- gsub(", $", "", paste(region, df.tab2$cerebellum, sep=", "))
   df.tab <- data.frame(
     Cluster = clust[peaks==1], 
-    Region = sub(", $", "", paste(capitalize(tolower(df.tab2$freesurfer)), df.tab2$cerebellum, sep=", ")), 
+    Region = region,  
     H = hemis, 
     BA = df.tab2$brodmann, 
     x = crds.peaks$x, 
@@ -301,4 +335,16 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   df.tab <- df.tab[inds,]
   
   df.tab
+}
+
+test.whereami <- function() {
+  source("whereami.R")
+  statfile <- "test_zstat.nii.gz"
+  maskfile <- "MNI152_T1_2mm_brain_mask_dil.nii.gz"
+  peakfile <- "test_peaks2.nii.gz"
+  file.remove(peakfile)
+  detect.peaks(statfile, maskfile, peakfile)
+  df.tab <- whereami(statfile, maskfile, peakfile, search.range=5, whereami.dir=getwd())
+  print(df.tab)
+  file.remove(peakfile)
 }
