@@ -78,7 +78,7 @@ detect.peaks <- function(statfile, maskfile, peakfile,
   
   # Mask
   if (mask.with.grey) {
-    greyfile <- "ho_maxprob25_edit.nii.gz"
+    greyfile <- "gray_matter.nii.gz"
     run("3dcalc -a %s -b %s -expr 'step(a)*step(b)' -prefix %s", maskfile, greyfile, maskfile2)
     maskfile <- maskfile2
   }
