@@ -63,7 +63,8 @@ run <- function(raw.cmd, ...) {
 # Peak Detection
 ## note: separation distance is in voxels
 detect.peaks <- function(statfile, maskfile, peakfile, 
-                         smooth.signif=T, sep.dist.voxs=6) 
+                         mask.with.grey=T, smooth.signif=T, 
+                         sep.dist.voxs=6) 
 {
   nim      <- nifti.image.read(statfile)  
   fwhm     <- mean(nim$pixdim) # will smooth by one voxel
@@ -73,6 +74,14 @@ detect.peaks <- function(statfile, maskfile, peakfile,
   clustfile  <- tempfile(pattern="clust", fileext=".nii.gz")
   smoothfile <- tempfile(pattern="smooth", fileext=".nii.gz")
   tablefile  <- tempfile(pattern="table", fileext=".txt")
+  maskfile2  <- tempfile(pattern="mask", fileext=".nii.gz")
+  
+  # Mask
+  if (mask.with.grey) {
+    greyfile <- "ho_maxprob25_edit.nii.gz"
+    run("3dcalc -a %s -b %s -expr 'step(a)*step(b)' -prefix %s", maskfile, greyfile, maskfile2)
+    maskfile <- maskfile2
+  }
   
   # Smooth stats
   if (smooth.signif) {    
@@ -89,7 +98,7 @@ detect.peaks <- function(statfile, maskfile, peakfile,
   run("3dExtrema -prefix %s -maxima -volume -closure -sep_dist %.4f -mask_file %s %s > %s", peakfile, sep.dist, maskfile, smoothfile, tablefile)
   
   # Temporary files
-  file.remove(clustfile, smoothfile, tablefile)
+  file.remove(clustfile, smoothfile, tablefile, maskfile2)
   
   return(TRUE)
 }
@@ -272,6 +281,10 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   stats    <- read_nifti_as_vector(statfile, mask)
   clust    <- read_nifti_as_clust(statfile, mask)
   
+  # Get the size of each cluster
+  vcat("cluster numbers")
+  clust.nums <- table(clust[clust!=0])
+  
   # Get coordinates in xyz (mm space)
   vcat("coordinates in mm")
   crds.ijk <- get.coords(dim(nim.peak), mask)
@@ -307,7 +320,9 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   df.tab2$brodmann[inds] <- ""
   df.tab2$curv[inds] <- ""
   ## remove sulcus/gyrus from insula and precuneus...TODO
-  
+  ## rename the IFG ones
+  inds <- df.tab2$freesurfer %in% c("Pars opercularis", "Pars orbitalis", "Pars triangularis")
+  df.tab2$freesurfer[inds] <- paste("Inferior frontal (", df.tab2$freesurfer[inds], ")", sep="")
   ## remove yeo network in certain subcortical regions
   inds <- df.tab2$freesurfer %in% c("Brain Stem", "Thalamus", "Hippocampus", "Amygdala", "VentralDC")
   df.tab2$yeo[inds] <- ""
@@ -333,6 +348,9 @@ whereami <- function(statfile, maskfile, peakfile, search.range=5,
   vcat("sort")
   inds <- with(df.tab, order(Cluster, Region, -1*y, x, z))
   df.tab <- df.tab[inds,]
+  
+  # Add cluster voxel numbers
+  attr(df.tab, "cluster.voxels") <- clust.nums
   
   df.tab
 }
